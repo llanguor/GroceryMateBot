@@ -5,12 +5,13 @@ import telebot
 from telebot import types
 from telebot.apihelper import ApiTelegramException
 from settings import settings
-from ai_parser import AiError, generate_products, parse_shopping_list, transcribe_audio
+from ai_parser import AiError, generate_from_voice, generate_products, parse_shopping_list, parse_voice
 from categories import category_index, load_categories
 from clock import format_date, today
 from list_formatter import category_label, group_items, list_text
 from lists_handler import add_to_list, delete_list, get_list, get_lists, reset_done, set_done, set_message_id
 from logger import get_logger
+from prompts import get_prompt
 from scope import scope_key
 from screens_handler import add_screen, mark_empty, pop_empty, remove_screen, replace_screens
 
@@ -200,8 +201,8 @@ def register_handlers(bot, username, bot_id):
     def stale(call, scope):
         show_start(call, scope, messages["list_not_found"])
 
-    # The only place where products enter a list. The list message is sent anew (the old one is removed), so the
-    # updated list shows up at the bottom of the chat.
+    # Products enter a list in save_entries. The list message is sent anew (the old one is removed), so the updated
+    # list shows up at the bottom of the chat.
     # mode: "today" - the list of today, "last" - the newest list, "new" - always a new list, "list" - the list list_id.
     # generate - the text is a request to the model (a recipe, a link, an idea) and not a list of products.
     def submit(ctx, text, mode, source=None, list_id=None, generate=False):
@@ -229,6 +230,10 @@ def register_handlers(bot, username, bot_id):
         if not entries:
             send(ctx, messages["generate_nothing" if generate else "nothing_found"])
             return
+        save_entries(ctx, entries, mode, source, list_id)
+
+    def save_entries(ctx, entries, mode, source, list_id):
+        chat_id, _, thread_id = ctx
         scope = scope_of(ctx)
         shopping_list, previous_message_id = add_to_list(scope, chat_id, thread_id, entries, today(), mode, list_id)
         sent = send(ctx, *list_screen(shopping_list), silent=settings["silent_list_messages"])
@@ -242,8 +247,9 @@ def register_handlers(bot, username, bot_id):
         if source is not None and settings["delete_user_message"]:
             remove_message(chat_id, source.message_id)
 
-    # A voice message is turned into text and then goes the same way as a written request.
-    def submit_audio(message, mode, list_id=None, generate=True):
+    # A voice message is a dictated shopping list, wherever it comes from. Only the answer to the question of the
+    # generation (the button ✨ or /gen) is a spoken request for the generation. Both have their own prompts.
+    def submit_audio(message, mode, list_id=None, generate=False):
         ctx = message_context(message)
         audio = message.voice or message.audio
         if audio.duration and audio.duration > settings["max_voice_seconds"]:
@@ -255,15 +261,19 @@ def register_handlers(bot, username, bot_id):
             pass
         try:
             data = bot.download_file(bot.get_file(audio.file_id).file_path)
-            text = transcribe_audio(data, getattr(audio, "mime_type", None) or "audio/ogg")
+            mime_type = getattr(audio, "mime_type", None) or "audio/ogg"
+            if generate:
+                entries = generate_from_voice(data, mime_type, load_categories())
+            else:
+                entries = parse_voice(data, mime_type, load_categories())
         except (AiError, ApiTelegramException) as e:
-            logger.error(f"Failed to transcribe the audio in chat {ctx[0]}: {e}")
+            logger.error(f"Failed to process the audio in chat {ctx[0]}: {e}")
             send(ctx, messages["voice_failed"])
             return
-        if not text:
-            send(ctx, messages["voice_empty"])
+        if not entries:
+            send(ctx, messages["generate_nothing" if generate else "voice_empty"])
             return
-        submit(ctx, text, mode, message, list_id, generate)
+        save_entries(ctx, entries, mode, message, list_id)
 
     def receive_items(message, mode, list_id, generate):
         if message.voice or message.audio:
@@ -344,7 +354,7 @@ def register_handlers(bot, username, bot_id):
         reply = message.reply_to_message
         return reply is not None and reply.from_user is not None and reply.from_user.id == bot_id
 
-    # A voice message is a request to the generative function. In a private chat it is accepted always, in a group
+    # A voice message is a dictated list. In a private chat it is accepted always, in a group
     # only as a reply to the bot (the others do not reach it when the privacy mode is on).
     @bot.message_handler(content_types=['voice', 'audio'], func=lambda message: settings["accept_voice"] and message.from_user is not None
                          and (message.chat.type == "private" or replies_to_bot(message)))
@@ -461,6 +471,8 @@ if __name__ == "__main__":
             logger.error(f"{key} is not set. Add it to appsettings.local.json")
             raise SystemExit(1)
     load_categories()
+    for prompt_name in ("parse", "generate", "voice_transcribe", "voice_parse", "voice_direct", "voice_generate", "voice_generate_transcribe"):
+        get_prompt(prompt_name)
     bot = telebot.TeleBot(settings["tg_token"], num_threads=settings["worker_threads"])
     me = bot.get_me()
     register_handlers(bot, me.username, me.id)

@@ -6,4 +6,5 @@ services:
       - ./appsettings.json:/usr/src/app/appsettings.json
       - ./appsettings.local.json:/usr/src/app/appsettings.local.json
       - ./categories.json:/usr/src/app/categories.json
+      - ./prompts.json:/usr/src/app/prompts.json
       - ./data:/usr/src/app/data

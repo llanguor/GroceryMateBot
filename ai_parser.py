@@ -5,6 +5,7 @@ from google import genai
 from google.genai import types
 from settings import settings
 from categories import category_index
+from prompts import get_prompt
 from logger import get_logger
 
 logger = get_logger()
@@ -45,9 +46,9 @@ def get_client():
     return _client
 
 
-def build_prompt(template, query, categories):
+def build_prompt(name, query, categories):
     names = ", ".join(category["name"] for category in categories)
-    return "\n".join(settings[template]).replace("{categories}", names).replace("{query}", query)
+    return get_prompt(name).replace("{categories}", names).replace("{query}", query)
 
 
 def strip_fences(text):
@@ -121,27 +122,54 @@ def ask_model(prompt, categories, url_context=False, timeout=None):
 
 # Splits the message of the user into products.
 def parse_shopping_list(query, categories):
-    return ask_model(build_prompt("ai_prompt", query, categories), categories)
+    return ask_model(build_prompt("parse", query, categories), categories)
 
 
 # Makes up products for a free request: a recipe, a link to a page with a recipe, an idea, an event...
 def generate_products(query, categories):
     has_url = re.search(r"https?://\S+", query) is not None
-    return ask_model(build_prompt("generate_prompt", query, categories), categories, url_context=has_url, timeout=settings["generate_timeout"])
+    return ask_model(build_prompt("generate", query, categories), categories, url_context=has_url, timeout=settings["generate_timeout"])
 
 
-# Speech to text. Returns an empty string if there is no speech in the audio.
-def transcribe_audio(data, mime_type):
+def ask_audio(data, mime_type, prompt, postprocess, json_mode=False):
+    config = {"http_options": types.HttpOptions(timeout=int(settings["generate_timeout"] * 1000))}
+    if json_mode:
+        config["response_mime_type"] = "application/json"
+
     def attempt():
         started = time.perf_counter()
         try:
             response = get_client().models.generate_content(
                 model=settings["gemini_model"],
-                contents=[types.Part.from_bytes(data=data, mime_type=mime_type), settings["transcribe_prompt"]],
-                config=types.GenerateContentConfig(http_options=types.HttpOptions(timeout=int(settings["generate_timeout"] * 1000))))
+                contents=[types.Part.from_bytes(data=data, mime_type=mime_type), prompt],
+                config=types.GenerateContentConfig(**config))
         except Exception as e:
             raise request_failed(e) from e
-        logger.info(f"[{settings['gemini_model']}] transcription {time.perf_counter() - started:.2f} s")
-        return (response.text or "").strip()
+        logger.info(f"[{settings['gemini_model']}] audio {time.perf_counter() - started:.2f} s")
+        return postprocess(response.text or "")
 
     return with_retries(attempt)
+
+
+# Speech to text. Returns an empty string if there is no speech in the audio.
+def transcribe_audio(data, mime_type):
+    return ask_audio(data, mime_type, get_prompt("voice_transcribe"), str.strip)
+
+
+# A dictated shopping list. By default the model listens to the audio and answers with the list at once; with
+# "voice_two_steps" the speech is written down first and the text is turned into the list by a second request.
+def parse_voice(data, mime_type, categories):
+    if settings["voice_two_steps"]:
+        text = transcribe_audio(data, mime_type)
+        return ask_model(build_prompt("voice_parse", text, categories), categories) if text else []
+    return ask_audio(data, mime_type, build_prompt("voice_direct", "", categories), lambda text: normalize_items(text, categories), json_mode=True)
+
+
+# A spoken request for the generation (after the button ✨ or /gen). It has its own prompts: the speech is not a
+# dictation of products here. With "voice_two_steps" the request is written down first (without any hints about
+# products) and goes to the ordinary generation as text.
+def generate_from_voice(data, mime_type, categories):
+    if settings["voice_two_steps"]:
+        text = ask_audio(data, mime_type, get_prompt("voice_generate_transcribe"), str.strip)
+        return generate_products(text, categories) if text else []
+    return ask_audio(data, mime_type, build_prompt("voice_generate", "", categories), lambda text: normalize_items(text, categories), json_mode=True)
