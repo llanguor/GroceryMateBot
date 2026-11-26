@@ -61,21 +61,28 @@ def confirm_screen(text, yes_data, no_data):
     return text, keyboard
 
 
+# The row with the control buttons goes on top; in a long menu (more than "repeat_controls_over_rows" rows with this
+# one) it is repeated at the bottom as well, so that it is at hand without scrolling.
+def build_keyboard(controls, body):
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    if controls:
+        keyboard.row(*controls)
+    for button in body:
+        keyboard.add(button)
+    if controls and settings["show_repeated_controls"] and len(body) + 1 > settings["repeat_controls_over_rows"]:
+        keyboard.row(*controls)
+    return keyboard
+
+
 def start_screen(scope):
     shopping_lists = get_lists(scope)
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    row = []
+    controls = []
     if settings["show_add_in_start_menu"]:
-        row.append(icon_button("add_icon", "new"))
+        controls.append(icon_button("add_icon", "new"))
     if settings["show_generate_in_start_menu"]:
-        row.append(icon_button("generate_icon", "gen_new"))
-    if row:
-        keyboard.row(*row)
-    if not shopping_lists:
-        return messages["start_empty"], keyboard
-    for shopping_list in shopping_lists:
-        keyboard.add(types.InlineKeyboardButton(text=format_date(shopping_list["date"]), callback_data=f"v_{shopping_list['id']}_{MENU}"))
-    return messages["start"], keyboard
+        controls.append(icon_button("generate_icon", "gen_new"))
+    body = [types.InlineKeyboardButton(text=format_date(item["date"]), callback_data=f"v_{item['id']}_{MENU}") for item in shopping_lists]
+    return messages["start" if shopping_lists else "start_empty"], build_keyboard(controls, body)
 
 
 def normalize_view(view, categories):
@@ -115,20 +122,18 @@ def list_screen(shopping_list, view=MENU):
     if settings["show_generate_in_list_menu"]:
         row.append(icon_button("generate_icon", f"gen_{list_id}"))
     row.append(clear_button)
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    body = []
     if view == MENU:
-        keyboard.row(*row)
         if active_items(shopping_list, categories):
-            keyboard.add(types.InlineKeyboardButton(text=buttons["all_items"], callback_data=f"v_{list_id}_{ALL}"))
+            body.append(types.InlineKeyboardButton(text=buttons["all_items"], callback_data=f"v_{list_id}_{ALL}"))
         remaining = {index for index, _ in group_items(active_items(shopping_list, categories), categories)}
         for index, category in enumerate(categories):
             if index in remaining:
-                keyboard.add(types.InlineKeyboardButton(text=category_label(category), callback_data=f"v_{list_id}_{index}"))
+                body.append(types.InlineKeyboardButton(text=category_label(category), callback_data=f"v_{list_id}_{index}"))
     else:
-        keyboard.row(*row)
         for item in active_items(shopping_list, categories, view)[:settings["max_item_buttons"]]:
-            keyboard.add(types.InlineKeyboardButton(text=f"{item['emoji']} {item['name']}", callback_data=f"d_{list_id}_{view}_{item['id']}"))
-    return list_text(shopping_list, categories), keyboard
+            body.append(types.InlineKeyboardButton(text=f"{item['emoji']} {item['name']}", callback_data=f"d_{list_id}_{view}_{item['id']}"))
+    return list_text(shopping_list, categories), build_keyboard(row, body)
 
 
 # "clear_without_confirm": false - always ask, "checked" - ask only while more than one product is not ticked off,
