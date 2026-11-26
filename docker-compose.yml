@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    restart: always
+    volumes:
+      - ./appsettings.json:/usr/src/app/appsettings.json
+      - ./appsettings.local.json:/usr/src/app/appsettings.local.json
+      - ./categories.json:/usr/src/app/categories.json
+      - ./data:/usr/src/app/data

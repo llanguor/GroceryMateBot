@@ -1,0 +1,4 @@
+pyTelegramBotAPI~=4.29.1
+loguru~=0.7.3
+tzdata>=2025.2
+google-genai>=1.0.0
