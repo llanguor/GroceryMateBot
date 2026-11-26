@@ -21,12 +21,17 @@ def merge_items(shopping_list, entries):
         item["done"] = False
 
 
-# mode "today" - add to the list of the given day, mode "last" - add to the newest list whatever its date.
-# A new list is created when there is nothing to add to. Returns the list and the id of its previous message.
-def add_to_list(scope, chat_id, thread_id, entries, day, mode):
+# mode "today" - add to the list of the given day, "last" - to the newest list whatever its date, "list" - to the
+# list list_id, "new" - always start a new list, even if there already is a list of that day.
+# A new list is also created when there is nothing to add to. Returns the list and the id of its previous message.
+def add_to_list(scope, chat_id, thread_id, entries, day, mode, list_id=None):
     def updater(data):
         lists = data.setdefault(str(scope), [])
-        if mode == "last":
+        if mode == "new":
+            target = None
+        elif mode == "list":
+            target = next((item for item in lists if item["id"] == list_id), None)
+        elif mode == "last":
             target = lists[-1] if lists else None
         else:
             target = next((item for item in reversed(lists) if item["date"] == day), None)
@@ -66,6 +71,18 @@ def set_done(scope, list_id, item_id):
         for item in shopping_list["items"]:
             if item["id"] == item_id:
                 item["done"] = True
+        return shopping_list
+
+    return update_data(LISTS_FILE, updater)
+
+
+def reset_done(scope, list_id):
+    def updater(data):
+        shopping_list = next((item for item in data.get(str(scope), []) if item["id"] == list_id), None)
+        if shopping_list is None:
+            return None
+        for item in shopping_list["items"]:
+            item["done"] = False
         return shopping_list
 
     return update_data(LISTS_FILE, updater)
